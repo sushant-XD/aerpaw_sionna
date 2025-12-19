@@ -1,5 +1,7 @@
 from typing import Dict, Optional, Tuple
 
+from utils import AntennaType
+
 try:
     import sionna.rt
 except ImportError as e:
@@ -34,6 +36,7 @@ class Sionna:
         self.transmitters: Dict[str, sionna.rt.Transmitter] = {}
         self.receivers: Dict[str, sionna.rt.Receiver] = {}
         self._path_solver = None
+        self._computed_paths = None
 
     def load_simulation_scene(self, scene_path: Optional[str] = None):
         try:
@@ -65,6 +68,10 @@ class Sionna:
         if not self.scene:
             raise RuntimeError("Scene not loaded")
 
+        if not self.scene.tx_array:
+            print("Tx array not defined. Setting to default")
+            self.set_array(AntennaType.Transmitter)
+
         tx = sionna.rt.Transmitter(name=name, position=position)
         if orientation:
             tx.orientation = orientation
@@ -82,6 +89,10 @@ class Sionna:
         if not self.scene:
             raise RuntimeError("Scene not loaded")
 
+        if not self.scene.rx_array:
+            print("Rx array not defined. Setting to default")
+            self.set_array(AntennaType.Receiver)
+
         rx = sionna.rt.Receiver(name=name, position=position)
         if orientation:
             rx.orientation = orientation
@@ -89,23 +100,56 @@ class Sionna:
         self.scene.add(rx)
         self.receivers[name] = rx
 
-    def update_transmitter_position(
-        self, name: str, position: Tuple[float, float, float]
+    def set_array(
+        self,
+        ant_type: AntennaType,
+        num_rows: int = 1,
+        num_cols: int = 1,
+        vertical_spacing: float = 1.0,
+        horizontal_spacing: float = 1.0,
+        pattern: str = "tr38901",
+        polarization: str = "V",
+    ) -> None:
+        """Sets antenna array"""
+        if not self.scene:
+            raise RuntimeError("Scene not loaded")
+
+        if ant_type == AntennaType.Transmitter:
+            self.scene.tx_array = PlanarArray(
+                num_rows=num_rows,
+                num_cols=num_cols,
+                vertical_spacing=vertical_spacing,
+                horizontal_spacing=horizontal_spacing,
+                pattern=pattern,
+                polarization=polarization,
+            )
+        elif ant_type == AntennaType.Receiver:
+            self.scene.rx_array = PlanarArray(
+                num_rows=num_rows,
+                num_cols=num_cols,
+                vertical_spacing=vertical_spacing,
+                horizontal_spacing=horizontal_spacing,
+                pattern=pattern,
+                polarization=polarization,
+            )
+
+    def update_ant_position(
+        self, ant_type: AntennaType, name: str, position: Tuple[float, float, float]
     ) -> None:
         """Update transmitter position."""
-        if name not in self.transmitters:
-            raise ValueError(f"Transmitter '{name}' not found")
 
-        self.transmitters[name].position = position
+        if ant_type == AntennaType.Transmitter:
+            if name not in self.transmitters:
+                raise ValueError(f"Transmitter '{name}' not found")
 
-    def update_receiver_position(
-        self, name: str, position: Tuple[float, float, float]
-    ) -> None:
-        """Update receiver position."""
-        if name not in self.receivers:
-            raise ValueError(f"Receiver '{name}' not found")
+            self.transmitters[name].position = position
+        elif ant_type == AntennaType.Receiver:
+            if name not in self.receivers:
+                raise ValueError(f"Receiver '{name}' not found")
 
-        self.receivers[name].position = position
+            self.receivers[name].position = position
+        else:
+            raise RuntimeError("Invalid Antenna Type")
 
     def compute_paths(self, max_depth: int = 3) -> Dict:
         """Compute propagation paths between transmitters and receivers."""
@@ -116,31 +160,70 @@ class Sionna:
             raise RuntimeError("No transmitters or receivers in scene")
 
         # Initialize path solver
-        self._path_solver = sionna.rt.PathSolver(self.scene, solver="fibonacci")
+        self._path_solver = sionna.rt.PathSolver()
 
         # Compute paths
-        paths = self._path_solver.compute_paths(max_depth=max_depth)
+        self._computed_paths = self._path_solver(scene=self.scene, max_depth=max_depth)
+
+        path_count = 0
+        if (
+            hasattr(self._computed_paths, "vertices")
+            and self._computed_paths.vertices is not None
+        ):
+            # vertices shape is typically [batch, num_rx, num_tx, max_paths, max_depth, 3]
+            path_count = int(np.prod(self._computed_paths.vertices.shape[:4]))
 
         return {
-            "path_count": len(paths.vertices),
+            "path_count": path_count,
             "max_depth": max_depth,
         }
 
     def get_channel_impulse_response(self) -> Dict:
-        """Compute and return Channel Impulse Response (CIR)."""
-        if not self._path_solver:
-            raise RuntimeError("Paths not computed. Call compute_paths() first")
+        """Return Channel Impulse Response (CIR) from computed paths."""
 
-        # Get CIR from path solver
-        paths = self._path_solver.compute_paths()
+        try:
+            # Use the Paths.cir() method to get channel impulse response
+            # Returns (a, tau) where:
+            # a: complex path coefficients [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
+            # tau: path delays [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths]
 
-        return {
-            "delays": paths.delays.numpy().tolist() if hasattr(paths, "delays") else [],
-            "gains": paths.gains.numpy().tolist() if hasattr(paths, "gains") else [],
-        }
+            a, tau = self._computed_paths.cir(
+                normalize_delays=True,  # Normalize first path to zero delay
+                out_type="numpy",  # Get numpy arrays
+            )
+
+            # Convert to nested lists for JSON serialization
+            delays = tau.tolist()
+
+            # Handle complex gains - separate real and imaginary parts
+            gains = {
+                "real": a.real.tolist(),
+                "imag": a.imag.tolist(),
+                "magnitude": np.abs(a).tolist(),
+                "phase": np.angle(a).tolist(),
+            }
+
+            # Also provide shape information for easier parsing
+            return {
+                "delays": delays,
+                "gains": gains,
+                "shape": {
+                    "num_rx": int(a.shape[0]),
+                    "num_rx_ant": int(a.shape[1]),
+                    "num_tx": int(a.shape[2]),
+                    "num_tx_ant": int(a.shape[3]),
+                    "num_paths": int(a.shape[4]),
+                    "num_time_steps": int(a.shape[5]),
+                },
+            }
+        except Exception as e:
+            import traceback
+
+            raise RuntimeError(f"Failed to extract CIR: {e}\n{traceback.format_exc()}")
 
     def reset(self) -> None:
         """Reset the simulation state."""
         self.transmitters.clear()
         self.receivers.clear()
         self._path_solver = None
+        self._computed_paths = None

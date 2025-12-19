@@ -1,122 +1,241 @@
-# update parameters
-# transmitter/receiver position
-# post the movement of vehicle in a scene
-# CIR at every step (endgoal)
-
-
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, status
 
 import main
 from schemas import *
-
-# 1. Global variable to hold our controller
-sim_controller = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Starting Sionna simulation...")
-    main.initialize()
+    try:
+        main.initialize()
+    except Exception as e:
+        print(f"Failed to initialize: {e}")
+        raise
     yield
     print("Shutting down...")
     main.shutdown()
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="Sionna RT API",
+    description="API for ray tracing simulation using Sionna",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
 
-@app.get("/")
+@app.get("/", response_model=StatusResponse, tags=["Health"])
 def root():
-    return {"status": "running"}
+    return StatusResponse(status="running")
 
 
-@app.get("/scene", response_model=SceneInfoResponse)
+@app.get("/scene", response_model=SceneInfoResponse, tags=["Scene"])
 def get_scene():
     try:
         return main.get_scene_info()
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve scene info: {str(e)}",
+        )
 
 
-@app.post("/scene/reset")
+@app.post("/scene/reset", response_model=MessageResponse, tags=["Scene"])
 def reset_scene():
     try:
         main.reset_scene()
-        return {"message": "scene reset"}
+        return MessageResponse(message="Scene reset successfully")
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reset scene: {str(e)}",
+        )
 
 
-@app.post("/transmitters", response_model=DeviceResponse)
+@app.post(
+    "/transmitters",
+    response_model=DeviceResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Transmitters"],
+)
 def add_tx(device: DeviceCreate):
+    """Add a new transmitter to the scene"""
     try:
-        main.add_transmitter(device.name, device.position.to_tuple())
-        return DeviceResponse(name=device.name, position=device.position)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        result = main.add_transmitter(
+            device.name,
+            device.position.to_tuple(),
+            device.orientation.to_tuple() if device.orientation else None,
+        )
+        return DeviceResponse(
+            name=result["name"],
+            position=Position.from_tuple(result["position"]),
+            orientation=(
+                Position.from_tuple(result["orientation"])
+                if result.get("orientation")
+                else None
+            ),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid transmitter data: {str(e)}",
+        )
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to add transmitter: {str(e)}",
+        )
 
 
-@app.get("/transmitters", response_model=List[DeviceResponse])
+@app.get("/transmitters", response_model=List[str], tags=["Transmitters"])
 def list_tx():
+    """List all transmitters in the scene"""
     try:
         return main.get_transmitters()
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve transmitters: {str(e)}",
+        )
 
 
-@app.put("/transmitters/{name}", response_model=DeviceResponse)
+@app.put("/transmitters/{name}", response_model=DeviceResponse, tags=["Transmitters"])
 def update_tx(name: str, update_data: DeviceUpdate):
+    """Update transmitter position"""
     try:
-        main.update_transmitter_position(name, update_data.position.to_tuple())
-        return DeviceResponse(name=name, position=update_data.position)
+        result = main.update_transmitter_position(name, update_data.position.to_tuple())
+        return DeviceResponse(
+            name=result["name"], position=Position.from_tuple(result["position"])
+        )
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Transmitter '{name}' not found",
+        )
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update transmitter: {str(e)}",
+        )
 
 
-@app.post("/receivers", response_model=DeviceResponse)
+@app.post(
+    "/receivers",
+    response_model=DeviceResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Receivers"],
+)
 def add_rx(device: DeviceCreate):
+    """Add a new receiver to the scene"""
     try:
-        return main.add_receiver(device.name, device.position.to_tuple())
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        result = main.add_receiver(
+            device.name,
+            device.position.to_tuple(),
+            device.orientation.to_tuple() if device.orientation else None,
+        )
+        return DeviceResponse(
+            name=result["name"],
+            position=Position.from_tuple(result["position"]),
+            orientation=(
+                Position.from_tuple(result["orientation"])
+                if result.get("orientation")
+                else None
+            ),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid receiver data: {str(e)}",
+        )
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to add receiver: {str(e)}",
+        )
 
 
-@app.get("/receivers", response_model=List[DeviceResponse])
+@app.get("/receivers", response_model=List[str], tags=["Receivers"])
 def list_rx():
+    """List all receivers in the scene"""
     try:
         return main.get_receivers()
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve receivers: {str(e)}",
+        )
 
 
-@app.put("/receivers/{name}", response_model=DeviceResponse)
+@app.put("/receivers/{name}", response_model=DeviceResponse, tags=["Receivers"])
 def update_rx(name: str, update_data: DeviceUpdate):
+    """Update receiver position"""
     try:
-        return main.update_receiver_position(name, update_data.position.to_tuple())
+        result = main.update_receiver_position(name, update_data.position.to_tuple())
+        return DeviceResponse(
+            name=result["name"], position=Position.from_tuple(result["position"])
+        )
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Receiver '{name}' not found"
+        )
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update receiver: {str(e)}",
+        )
 
 
-@app.post("/simulation/paths")
+@app.post(
+    "/simulation/paths", response_model=PathComputationResponse, tags=["Simulation"]
+)
 def compute_paths(params: PathComputationRequest):
     try:
-        return main.compute_paths(params.max_depth)
+        result = main.compute_paths(params.max_depth)
+        return PathComputationResponse(
+            path_count=result["path_count"], max_depth=result["max_depth"]
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid path computation parameters: {str(e)}",
+        )
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to compute paths: {str(e)}",
+        )
+
+
+# @app.get("/simulation/cir", response_model=CirResponse, tags=["Simulation"])
+# def get_cir():
+#     """Retrieve the Channel Impulse Response (CIR)"""
+#     try:
+#         result = main.get_cir()
+#         return CirResponse(
+#             delays=result.get("delays", []), gains=result.get("gains", [])
+#         )
+#     except RuntimeError as e:
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail=f"Failed to retrieve CIR: {str(e)}",
+#         )
 
 
 @app.get("/simulation/cir", response_model=CirResponse, tags=["Simulation"])
 def get_cir():
-    """
-    Retrieve the Channel Impulse Response (CIR) for the current step.
-    """
+    """Retrieve the Channel Impulse Response (CIR)"""
     try:
-        return simulation_engine.get_cir()
+        result = main.get_cir()
+        return CirResponse(
+            delays=result["delays"],
+            gains=CirGains(**result["gains"]),
+            shape=CirShape(**result["shape"]),
+        )
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve CIR: {str(e)}",
+        )
