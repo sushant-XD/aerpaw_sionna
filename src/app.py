@@ -209,22 +209,8 @@ def compute_paths(params: PathComputationRequest):
         )
 
 
-# @app.get("/simulation/cir", response_model=CirResponse, tags=["Simulation"])
-# def get_cir():
-#     """Retrieve the Channel Impulse Response (CIR)"""
-#     try:
-#         result = main.get_cir()
-#         return CirResponse(
-#             delays=result.get("delays", []), gains=result.get("gains", [])
-#         )
-#     except RuntimeError as e:
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail=f"Failed to retrieve CIR: {str(e)}",
-#         )
 
-
-@app.get("/simulation/cir", response_model=CirResponse, tags=["Simulation"])
+@app.get("/simulation/cir", response_model=CirResponse)
 def get_cir():
     """Retrieve the Channel Impulse Response (CIR)"""
     try:
