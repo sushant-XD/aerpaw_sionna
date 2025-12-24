@@ -1,0 +1,16 @@
+services:
+  sionna-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aerpaw-sionna-api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount src directory
+      - ./src:/app/src
+      # Mount scenes directory to load custom scenes
+      - ./src/scenes:/app/src/scenes:ro
+    environment:
+      - PYTHONPATH=/app/src
+    restart: unless-stopped
